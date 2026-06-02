@@ -710,7 +710,10 @@ GoogleClient::Result GoogleClient::syncAll(RemindersData& out, const volatile bo
   if (!loadCreds(creds)) return Result::NoCredentials;
 
   if (cancelled()) return Result::Cancelled;
-  if (!connectWifi()) return cancelled() ? Result::Cancelled : Result::WifiFailed;
+  if (!connectWifi()) {
+    if (cancelled()) return Result::Cancelled;
+    return WIFI_STORE.getCredentials().empty() ? Result::NoWifiCreds : Result::WifiFailed;
+  }
 
   syncClock();
 
@@ -781,7 +784,10 @@ GoogleClient::Result GoogleClient::markTaskComplete(uint8_t itemIndex, Reminders
   Creds creds;
   if (!loadCreds(creds)) return Result::NoCredentials;
   if (cancelled()) return Result::Cancelled;
-  if (!connectWifi()) return cancelled() ? Result::Cancelled : Result::WifiFailed;
+  if (!connectWifi()) {
+    if (cancelled()) return Result::Cancelled;
+    return WIFI_STORE.getCredentials().empty() ? Result::NoWifiCreds : Result::WifiFailed;
+  }
 
   auto wifiOff = []() {
     WiFi.disconnect(true);
@@ -816,6 +822,8 @@ const char* GoogleClient::resultName(Result r) {
       return "NoCredentials";
     case Result::WifiFailed:
       return "WifiFailed";
+    case Result::NoWifiCreds:
+      return "NoWifiCreds";
     case Result::ClockUnset:
       return "ClockUnset";
     case Result::AuthFailed:
