@@ -21,6 +21,7 @@ class GoogleClient {
     OK,
     NoCredentials,  // google_creds.json missing or malformed
     WifiFailed,     // could not join the last-known network
+    NoWifiCreds,    // no saved WiFi networks on SD at all
     ClockUnset,     // NTP failed and the system clock is implausible (countdowns would be garbage)
     AuthFailed,     // token endpoint rejected the refresh token
     FetchFailed,    // both Calendar and Tasks calls failed

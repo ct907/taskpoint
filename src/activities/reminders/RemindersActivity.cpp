@@ -334,6 +334,9 @@ void RemindersActivity::render(RenderLock&&) {
         case GoogleClient::Result::WifiFailed:
           hint = StrId::STR_REMINDERS_FAIL_WIFI;
           break;
+        case GoogleClient::Result::NoWifiCreds:
+          hint = StrId::STR_REMINDERS_FAIL_NOWIFI;
+          break;
         case GoogleClient::Result::ClockUnset:
           hint = StrId::STR_REMINDERS_FAIL_CLOCK;
           break;
