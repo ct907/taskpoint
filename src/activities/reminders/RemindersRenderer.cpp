@@ -17,30 +17,28 @@ namespace {
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 
-// Left/right margin width; texture fills the 0..MARGIN_X and W-MARGIN_X..W strips.
-static constexpr int MARGIN_X = 14;
+// Left/right margin width; 2× wider so texture strips are clearly visible.
+static constexpr int MARGIN_X = 28;
 // Clear white gap above and below each textured content band.
 static constexpr int TEX_GAP = 8;
 // Inner vertical padding inside the paper block (between band edge and text).
 static constexpr int TEX_PADV = 4;
 // Inner horizontal text indent inside the paper block.
 static constexpr int TEX_PADH = 9;
-// Extra left indent applied to item title text (e.g. "#01 Clean My Room"); the
-// white paper block hugs the text (fit-content) and texture fills the leftover.
-static constexpr int TITLE_INDENT = 8;
-// Solid-black LEAVE BY / time banner height.
-static constexpr int BAR_HEIGHT = 30;
+// Vertical padding above/below the title text inside its full-width banner; the
+// banner height tracks the text height so it just covers the glyphs.
+static constexpr int TITLE_BANNER_PAD = 3;
+// Left inset for the title text within the edge-to-edge black banner.
+static constexpr int TITLE_BANNER_TEXT_X = 16;
 // Tightened stale-data banner height.
 static constexpr int STALE_BAR_H = 18;
 
 // ─── Font assignments ─────────────────────────────────────────────────────────
-// Extra-small halftone header; medium halftone titles at 16pt for visual weight.
 static constexpr int HEADER_FONT = UI_10_FONT_ID;
-static constexpr int TITLE_FONT = NOTOSANS_16_FONT_ID;
-// Solid-black time banner: smaller font to fit "Tuesday 4:00PM  Leave in 2D 18H 12M".
-static constexpr int BANNER_FONT = NOTOSANS_12_FONT_ID;
-static constexpr int SUB_FONT = NOTOSANS_14_FONT_ID;
-static constexpr int DETAIL_FONT = NOTOSANS_12_FONT_ID;
+static constexpr int TITLE_FONT = NOTOSANS_12_FONT_ID;
+static constexpr int LEAVE_BY_FONT = NOTOSANS_12_FONT_ID;
+static constexpr int SUB_FONT = UI_10_FONT_ID;
+static constexpr int DETAIL_FONT = UI_10_FONT_ID;
 static constexpr int FOOTER_FONT = UI_10_FONT_ID;
 
 // Sanity floor: 2023-11-14. Below this the clock is unset (deep-sleep wake
@@ -68,7 +66,7 @@ void formatClock12(time_t epoch, char* buf, size_t len) {
   snprintf(buf, len, "%d:%02d%s", h, t.tm_min, t.tm_hour < 12 ? "am" : "pm");
 }
 
-// Uppercase 12-hour, e.g. "4:00PM" — used in the solid-black time banner.
+// Uppercase 12-hour, e.g. "4:00PM" — used in non-travel start-time label.
 void formatClock12Upper(time_t epoch, char* buf, size_t len) {
   char tmp[16];
   formatClock12(epoch, tmp, sizeof(tmp));
@@ -78,16 +76,16 @@ void formatClock12Upper(time_t epoch, char* buf, size_t len) {
   buf[i] = '\0';
 }
 
-// Verbose countdown, e.g. "01H 56M" or "2D 18H 12M" once the gap spans a day.
-void formatCountdownVerbose(long secsLeft, char* buf, size_t len) {
+// Compact HH:MM countdown — e.g. "01:23" for 1h 23m, "2D 18H" for multi-day.
+void formatCountdownCompact(long secsLeft, char* buf, size_t len) {
   if (secsLeft < 0) secsLeft = 0;
   const long days = secsLeft / 86400;
   const long hours = (secsLeft % 86400) / 3600;
   const long mins = (secsLeft % 3600) / 60;
   if (days > 0)
-    snprintf(buf, len, "%ldD %02ldH %02ldM", days, hours, mins);
+    snprintf(buf, len, "%ldD %02ldH", days, hours);
   else
-    snprintf(buf, len, "%02ldH %02ldM", hours, mins);
+    snprintf(buf, len, "%02ld:%02ld", hours, mins);
 }
 
 // Uppercase 12-hour time, prefixed with the full weekday name when `epoch` falls
@@ -159,8 +157,7 @@ bool texelAt(Tex t, int px, int py) {
 
 // Paints texture in the left [0, marginX) and right [W-marginX, W) strips for
 // the horizontal band [bandY, bandY+bandH). The centre content area (already
-// white from clearScreen) is intentionally untouched — this is the Android-style
-// approach where the texture fills only the padding frame, not the text area.
+// white from clearScreen) is intentionally untouched.
 void paintTex(const GfxRenderer& r, int bandY, int bandH, Tex tex, int W, int marginX) {
   const int bandEnd = bandY + bandH;
   for (int py = bandY; py < bandEnd; py++) {
@@ -194,50 +191,6 @@ int drawZone(const GfxRenderer& r, int font, const char* text, Tex tex, int y, i
   return y + TEX_GAP + paperH + TEX_GAP;
 }
 
-// Like drawZone, but the white "paper" block hugs the text (fit-content): the
-// texture pattern is painted across the whole band and a white box just wide
-// enough for the text (plus padding) is punched out around it, so the leftover
-// space to the right of the text is filled with texture instead of white.
-// `xIndent` shifts the text — and the white box's left edge — further right.
-int drawZoneFit(const GfxRenderer& r, int font, const char* text, Tex tex, int y, int W, int contentLeft,
-                int contentRight, int lineH, bool bold, int xIndent = 0) {
-  const int paperH = lineH + TEX_PADV * 2;
-  const int bandTop = y + TEX_GAP;
-  const auto fam = bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
-  const int textX = contentLeft + TEX_PADH + xIndent;
-  const int textW = r.getTextWidth(font, text, fam);
-
-  // White paper box: from the indented left edge to one padding past the text,
-  // clamped to the content area so it never spills into the right margin.
-  const int boxLeft = contentLeft + xIndent;
-  int boxRight = textX + textW + TEX_PADH;
-  if (boxRight > contentRight) boxRight = contentRight;
-
-  // Texture the full band edge-to-edge first, then clear the white box so only
-  // the leftover (right of the text) keeps the pattern.
-  for (int py = bandTop; py < bandTop + paperH; py++)
-    for (int px = 0; px < W; px++)
-      if (texelAt(tex, px, py)) r.drawPixel(px, py, true);
-  r.fillRect(boxLeft, bandTop, boxRight - boxLeft, paperH, false);
-
-  r.drawText(font, textX, bandTop + TEX_PADV, text, true, fam);
-  return y + TEX_GAP + paperH + TEX_GAP;
-}
-
-// Solid-black inverted time banner (highest visual weight). Returns y after.
-int drawBanner(const GfxRenderer& r, const char* leftLabel, const char* rightLabel, int y, int W, int contentLeft,
-               int contentRight, int contentWidth) {
-  const int bannerY = y + TEX_GAP;
-  r.fillRect(contentLeft, bannerY, contentWidth, BAR_HEIGHT, true);
-  const int textTop = centeredTextTop(r, BANNER_FONT, bannerY, BAR_HEIGHT);
-  r.drawText(BANNER_FONT, contentLeft + 8, textTop, leftLabel, false, EpdFontFamily::BOLD);
-  if (rightLabel && rightLabel[0]) {
-    const int rw = r.getTextWidth(BANNER_FONT, rightLabel, EpdFontFamily::BOLD);
-    r.drawText(BANNER_FONT, contentRight - 8 - rw, textTop, rightLabel, false, EpdFontFamily::BOLD);
-  }
-  return y + TEX_GAP + BAR_HEIGHT + TEX_GAP;
-}
-
 // Stale-data bar (inverted, centred label).
 void drawStaleBar(const GfxRenderer& r, const RemindersData& data, int barTop, int contentLeft, int contentWidth) {
   r.fillRect(contentLeft, barTop, contentWidth, STALE_BAR_H, true);
@@ -256,14 +209,15 @@ void drawStaleBar(const GfxRenderer& r, const RemindersData& data, int barTop, i
 
 // ─── Item block height (for pagination) ───────────────────────────────────────
 
-int blockHeight(const CalItem& it, int titleH, int subH, int detailH) {
-  int h = zoneH(titleH);
-  if (it.note_count > 0) h += zoneH(subH, it.note_count);
+int blockHeight(const CalItem& it, int titleH, int subH, int detailH, int leaveByH) {
+  // Full-width title banner: height tracks the text plus a little vertical pad.
+  int h = TEX_GAP + (titleH + TITLE_BANNER_PAD * 2) + TEX_GAP;
+  if (it.note_count > 0) h += it.note_count * zoneH(subH);
   if (it.start_epoch != 0) {
     if (it.all_day) {
       h += zoneH(detailH);
     } else {
-      h += TEX_GAP + BAR_HEIGHT + TEX_GAP;
+      h += zoneH(leaveByH);
       if (it.is_calendar && it.travel_secs > 0) h += zoneH(detailH);
     }
   }
@@ -273,33 +227,57 @@ int blockHeight(const CalItem& it, int titleH, int subH, int detailH) {
 
 // ─── Draw one item ────────────────────────────────────────────────────────────
 
-int drawItem(const GfxRenderer& r, const CalItem& it, uint8_t number, int y, int W, int contentLeft, int contentRight,
-             int contentWidth, time_t now, bool clockValid, int titleH, int subH, int detailH) {
-  // ── Title — medium halftone, fit-content paper with extra left indent ────
+int drawItem(const GfxRenderer& r, const CalItem& it, uint8_t itemIndex, int y, int W, int contentLeft,
+             int contentRight, int contentWidth, time_t now, bool clockValid, int titleH, int subH, int detailH,
+             int leaveByH, int8_t selectedIndex) {
+  (void)contentRight;
+  const uint8_t number = itemIndex + 1;
+
+  // ── Title — solid black banner spanning the full screen width, white text.
+  // The bar runs edge-to-edge (x=0..W, ignoring the side margins) and is only
+  // as tall as the text needs, per the mockup's full-bleed task banner. ───────
+  // For task items (not calendar events with a task_id), a checkbox is drawn on
+  // the right side: outlined = unselected, inner-filled = selected, fully filled = completed.
   {
+    const bool hasCheckbox = !it.is_calendar && it.task_id[0] != '\0';
+    const bool selected = hasCheckbox && (selectedIndex == static_cast<int8_t>(itemIndex));
+    const int checkSize = titleH;
+    const int checkX = W - TITLE_BANNER_TEXT_X - checkSize;
+    // Truncate title short enough to leave room for the checkbox when present.
+    const int maxTitleW = hasCheckbox ? (checkX - TITLE_BANNER_TEXT_X - 4) : (W - TITLE_BANNER_TEXT_X * 2);
     char buf[96];
     snprintf(buf, sizeof(buf), "#%02u  %s", number, it.title);
-    const std::string trunc = r.truncatedText(TITLE_FONT, buf, contentWidth - TEX_PADH * 2 - TITLE_INDENT);
-    y = drawZoneFit(r, TITLE_FONT, trunc.c_str(), Tex::Med, y, W, contentLeft, contentRight, titleH, true,
-                    TITLE_INDENT);
-  }
-
-  // ── Sub-items — crosshatch, grouped on one paper block ───────────────────
-  if (it.note_count > 0) {
-    const int paperH = it.note_count * subH + TEX_PADV * 2;
-    const int bandTop = y + TEX_GAP;
-    paintTex(r, bandTop, paperH, Tex::Cross, W, contentLeft);
-    int ty = bandTop + TEX_PADV;
-    for (uint8_t n = 0; n < it.note_count; n++) {
-      char noteBuf[56];
-      snprintf(noteBuf, sizeof(noteBuf), "  > %.*s", static_cast<int>(sizeof(it.notes[0]) - 1), it.notes[n]);
-      r.drawText(SUB_FONT, contentLeft + TEX_PADH + 8, ty, noteBuf, true, EpdFontFamily::REGULAR);
-      ty += subH;
+    const int bannerH = titleH + TITLE_BANNER_PAD * 2;
+    const std::string trunc = r.truncatedText(TITLE_FONT, buf, maxTitleW);
+    const int bannerY = y + TEX_GAP;
+    r.fillRect(0, bannerY, W, bannerH, true);
+    r.drawText(TITLE_FONT, TITLE_BANNER_TEXT_X, bannerY + TITLE_BANNER_PAD, trunc.c_str(), false, EpdFontFamily::BOLD);
+    if (hasCheckbox) {
+      const int checkY = bannerY + TITLE_BANNER_PAD;
+      if (it.completed) {
+        // Completed: white filled square.
+        r.fillRect(checkX, checkY, checkSize, checkSize, false);
+      } else if (selected) {
+        // Selected (ready to complete): outline + inner filled dot.
+        r.drawRect(checkX, checkY, checkSize, checkSize, false);
+        r.fillRect(checkX + 3, checkY + 3, checkSize - 6, checkSize - 6, false);
+      } else {
+        // Uncompleted, unselected: white outline only.
+        r.drawRect(checkX, checkY, checkSize, checkSize, false);
+      }
     }
-    y += TEX_GAP + paperH + TEX_GAP;
+    y = bannerY + bannerH + TEX_GAP;
   }
 
-  // ── Time / banner ────────────────────────────────────────────────────────
+  // ── Sub-items — crosshatch, one indented zone per note with ↳ prefix ────
+  for (uint8_t n = 0; n < it.note_count; n++) {
+    char noteBuf[60];
+    snprintf(noteBuf, sizeof(noteBuf), "\xe2\x86\xb3 %.*s", static_cast<int>(sizeof(it.notes[0]) - 1), it.notes[n]);
+    const std::string noteTrunc = r.truncatedText(SUB_FONT, noteBuf, contentWidth - TEX_PADH * 2 - 8);
+    y = drawZone(r, SUB_FONT, noteTrunc.c_str(), Tex::Cross, y, W, contentLeft, subH, false, false, 8);
+  }
+
+  // ── Time zone ────────────────────────────────────────────────────────────
   if (it.start_epoch != 0) {
     if (it.all_day) {
       // All-day / dated task: plain date label, never a countdown.
@@ -308,45 +286,50 @@ int drawItem(const GfxRenderer& r, const CalItem& it, uint8_t number, int y, int
       char line[48];
       snprintf(line, sizeof(line), "%s %s", it.is_calendar ? tr(STR_REMINDERS_ALL_DAY) : tr(STR_REMINDERS_DUE),
                dateBuf);
-      y = drawZone(r, DETAIL_FONT, line, Tex::Ruled, y, W, contentLeft, detailH, false, false);
+      y = drawZone(r, DETAIL_FONT, line, Tex::Ruled, y, W, contentLeft, detailH, false, false, 8);
     } else {
-      // Solid-black banner — highest visual weight.
-      // Left: the actionable time (departure when travel is known, else start),
-      // prefixed with the weekday when it isn't today. Right: "Leave in"/"Starts
-      // in" plus a D/H/M countdown to that same time.
+      // Ruled zone — bold "LEAVE BY [time]  |  [HH:MM] LEFT" (or just start
+      // time when no travel is known). Same texture as meta row below it, but
+      // bold weight gives the actionable info the highest readable priority.
       const bool hasTravel = it.is_calendar && it.travel_secs > 0;
       const time_t countdownTarget = hasTravel ? it.start_epoch - it.travel_secs : it.start_epoch;
-      char leftLabel[48], rightLabel[40];
-      formatTimeWithDay(it.start_epoch, now, clockValid, leftLabel, sizeof(leftLabel));
+      char leftLabel[48], leaveLine[96];
+      if (hasTravel) {
+        char leaveBuf[16];
+        formatClock12(countdownTarget, leaveBuf, sizeof(leaveBuf));
+        snprintf(leftLabel, sizeof(leftLabel), "%s %s", tr(STR_REMINDERS_LEAVE_BY), leaveBuf);
+      } else {
+        formatTimeWithDay(it.start_epoch, now, clockValid, leftLabel, sizeof(leftLabel));
+      }
       if (clockValid) {
         char cd[24];
-        formatCountdownVerbose(static_cast<long>(countdownTarget - now), cd, sizeof(cd));
-        snprintf(rightLabel, sizeof(rightLabel), "%s %s",
-                 hasTravel ? tr(STR_REMINDERS_LEAVE_IN) : tr(STR_REMINDERS_STARTS_IN), cd);
+        formatCountdownCompact(static_cast<long>(countdownTarget - now), cd, sizeof(cd));
+        snprintf(leaveLine, sizeof(leaveLine), "%s  |  %s %s", leftLabel, cd, tr(STR_REMINDERS_LEFT));
       } else {
-        rightLabel[0] = '\0';
+        snprintf(leaveLine, sizeof(leaveLine), "%s", leftLabel);
       }
-      y = drawBanner(r, leftLabel, rightLabel, y, W, contentLeft, contentRight, contentWidth);
+      const std::string leaveTrunc = r.truncatedText(LEAVE_BY_FONT, leaveLine, contentWidth - TEX_PADH * 2 - 8);
+      y = drawZone(r, LEAVE_BY_FONT, leaveTrunc.c_str(), Tex::Ruled, y, W, contentLeft, leaveByH, true, false, 8);
 
-      // Meta row (event time + travel duration) — ruled lines.
+      // Meta row (event time + travel duration) — ruled lines, indented.
       if (it.is_calendar && it.travel_secs > 0) {
         char metaBuf[64];
         char evtBuf[16];
         formatClock12(it.start_epoch, evtBuf, sizeof(evtBuf));
-        snprintf(metaBuf, sizeof(metaBuf), "EVENT: %s  |  TRAVEL: %ldm", evtBuf,
+        snprintf(metaBuf, sizeof(metaBuf), "EVENT: %s  |  TRAVEL: %ld mins", evtBuf,
                  static_cast<long>(it.travel_secs / 60));
-        const std::string metaTrunc = r.truncatedText(DETAIL_FONT, metaBuf, contentWidth - TEX_PADH * 2);
-        y = drawZone(r, DETAIL_FONT, metaTrunc.c_str(), Tex::Ruled, y, W, contentLeft, detailH, false, false);
+        const std::string metaTrunc = r.truncatedText(DETAIL_FONT, metaBuf, contentWidth - TEX_PADH * 2 - 8);
+        y = drawZone(r, DETAIL_FONT, metaTrunc.c_str(), Tex::Ruled, y, W, contentLeft, detailH, false, false, 8);
       }
     }
   }
 
-  // ── Location — light halftone ────────────────────────────────────────────
+  // ── Location — light halftone, indented ─────────────────────────────────
   if (it.location[0] != '\0') {
     char dest[96];
     snprintf(dest, sizeof(dest), "%s %s", tr(STR_REMINDERS_DEST), it.location);
-    const std::string destStr = r.truncatedText(DETAIL_FONT, dest, contentWidth - TEX_PADH * 2);
-    y = drawZone(r, DETAIL_FONT, destStr.c_str(), Tex::Light, y, W, contentLeft, detailH, false, false);
+    const std::string destStr = r.truncatedText(DETAIL_FONT, dest, contentWidth - TEX_PADH * 2 - 8);
+    y = drawZone(r, DETAIL_FONT, destStr.c_str(), Tex::Light, y, W, contentLeft, detailH, false, false, 8);
   }
 
   return y;
@@ -356,7 +339,8 @@ int drawItem(const GfxRenderer& r, const CalItem& it, uint8_t number, int y, int
 
 // ─── Public interface ─────────────────────────────────────────────────────────
 
-uint8_t RemindersRenderer::drawLayout(GfxRenderer& renderer, const RemindersData& data, uint8_t startIndex) {
+uint8_t RemindersRenderer::drawLayout(GfxRenderer& renderer, const RemindersData& data, uint8_t startIndex,
+                                      int8_t selectedIndex) {
   // Force portrait — the 480×800 panel is always rendered portrait regardless
   // of what orientation the reader left the screen in.
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
@@ -376,6 +360,7 @@ uint8_t RemindersRenderer::drawLayout(GfxRenderer& renderer, const RemindersData
   const int titleH = renderer.getLineHeight(TITLE_FONT);
   const int subH = renderer.getLineHeight(SUB_FONT);
   const int detailH = renderer.getLineHeight(DETAIL_FONT);
+  const int leaveByH = renderer.getLineHeight(LEAVE_BY_FONT);
   const int headerH = renderer.getLineHeight(HEADER_FONT);
   const int footerH = renderer.getLineHeight(FOOTER_FONT);
 
@@ -386,8 +371,8 @@ uint8_t RemindersRenderer::drawLayout(GfxRenderer& renderer, const RemindersData
     if (hdrEpoch > MIN_VALID_EPOCH) {
       struct tm hdrTm;
       localTm(hdrEpoch, hdrTm);
-      snprintf(header, sizeof(header), "%s  |  %s %s %d  |  %u %s", tr(STR_REMINDERS_TASKS), WDAY[hdrTm.tm_wday % 7],
-               MON[hdrTm.tm_mon % 12], hdrTm.tm_mday, static_cast<unsigned>(data.count), tr(STR_REMINDERS_ITEMS));
+      snprintf(header, sizeof(header), "%s  |  %s %s %d", tr(STR_REMINDERS_TASKS), WDAY[hdrTm.tm_wday % 7],
+               MON[hdrTm.tm_mon % 12], hdrTm.tm_mday);
     } else {
       snprintf(header, sizeof(header), "%s", tr(STR_REMINDERS_TASKS));
     }
@@ -395,7 +380,6 @@ uint8_t RemindersRenderer::drawLayout(GfxRenderer& renderer, const RemindersData
   }
 
   // ── Footer geometry — hints flush at the very bottom ────────────────────
-  // No TOTAL counter or brand line: hints are the only footer element.
   const int hintHeight = 2 * footerH;
   const int hintTop = H - 6 - hintHeight;
   const int dividerY = hintTop - 6;
@@ -415,12 +399,14 @@ uint8_t RemindersRenderer::drawLayout(GfxRenderer& renderer, const RemindersData
 
   // ── Item loop with pagination ────────────────────────────────────────────
   uint8_t i = startIndex;
+  bool hasCompletable = false;
   while (i < data.count) {
     const CalItem& it = data.items[i];
-    const int bh = blockHeight(it, titleH, subH, detailH);
+    const int bh = blockHeight(it, titleH, subH, detailH, leaveByH);
     if (i != startIndex && y + bh > contentBottom) break;
-    y = drawItem(renderer, it, static_cast<uint8_t>(i + 1), y, W, contentLeft, contentRight, contentWidth, now,
-                 clockValid, titleH, subH, detailH);
+    y = drawItem(renderer, it, i, y, W, contentLeft, contentRight, contentWidth, now, clockValid, titleH, subH, detailH,
+                 leaveByH, selectedIndex);
+    if (!it.is_calendar && it.task_id[0] != '\0') hasCompletable = true;
     i++;
   }
   const uint8_t nextIndex = i;
@@ -441,12 +427,19 @@ uint8_t RemindersRenderer::drawLayout(GfxRenderer& renderer, const RemindersData
   dottedHLine(renderer, contentLeft, dividerY, contentWidth);
 
   // ── Hints — flush at the bottom ──────────────────────────────────────────
-  // Page navigation is appended only when the list spans multiple pages.
   {
     std::string hint;
     if (hasPrev || hasMore) {
       hint += tr(STR_REMINDERS_HINT_PAGE);
       hint += "  ";
+    }
+    if (hasCompletable) {
+      hint += tr(STR_REMINDERS_HINT_SELECT);
+      hint += "  ";
+      if (selectedIndex >= 0) {
+        hint += tr(STR_REMINDERS_HINT_COMPLETE);
+        hint += "  ";
+      }
     }
     hint += tr(STR_REMINDERS_HINT_SYNC);
     hint += "  ";
@@ -461,14 +454,16 @@ uint8_t RemindersRenderer::drawLayout(GfxRenderer& renderer, const RemindersData
   return nextIndex;
 }
 
-uint8_t RemindersRenderer::renderFull(GfxRenderer& renderer, const RemindersData& data, uint8_t startIndex) {
-  const uint8_t nextIndex = drawLayout(renderer, data, startIndex);
+uint8_t RemindersRenderer::renderFull(GfxRenderer& renderer, const RemindersData& data, uint8_t startIndex,
+                                      int8_t selectedIndex) {
+  const uint8_t nextIndex = drawLayout(renderer, data, startIndex, selectedIndex);
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   return nextIndex;
 }
 
-bool RemindersRenderer::renderCountdownsOnly(GfxRenderer& renderer, const RemindersData& data, uint8_t startIndex) {
-  drawLayout(renderer, data, startIndex);
+bool RemindersRenderer::renderCountdownsOnly(GfxRenderer& renderer, const RemindersData& data, uint8_t startIndex,
+                                             int8_t selectedIndex) {
+  drawLayout(renderer, data, startIndex, selectedIndex);
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 
   const time_t now = time(nullptr);
