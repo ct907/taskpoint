@@ -186,9 +186,21 @@ int drawZone(const GfxRenderer& r, int font, const char* text, Tex tex, int y, i
 
 // ─── Item block height (for pagination) ───────────────────────────────────────
 
-int blockHeight(const CalItem& it, int titleH, int subH, int detailH, int leaveByH) {
-  // Full-width title banner: height tracks the text plus a little vertical pad.
-  int h = TEX_GAP + (titleH + TITLE_BANNER_PAD * 2) + TEX_GAP;
+int blockHeight(const GfxRenderer& r, int W, uint8_t itemIndex, const CalItem& it, int titleH, int subH, int detailH,
+                int leaveByH) {
+  const bool hasCheckbox = !it.is_calendar && it.task_id[0] != '\0';
+  int bannerH = titleH + TITLE_BANNER_PAD * 2;
+  if (hasCheckbox) {
+    const int checkSize = titleH;
+    const int checkX = W - TITLE_BANNER_TEXT_X - checkSize;
+    const int maxTitleW = checkX - TITLE_BANNER_TEXT_X - 4;
+    char buf[96];
+    snprintf(buf, sizeof(buf), "#%02u  %s", static_cast<unsigned>(itemIndex + 1), it.title);
+    if (r.getTextWidth(TITLE_FONT, buf, EpdFontFamily::BOLD) > maxTitleW) {
+      bannerH = titleH * 2 + TITLE_BANNER_PAD * 2;
+    }
+  }
+  int h = TEX_GAP + bannerH + TEX_GAP;
   if (it.note_count > 0) h += it.note_count * zoneH(subH);
   if (it.start_epoch != 0) {
     if (it.all_day) {
@@ -220,24 +232,39 @@ int drawItem(const GfxRenderer& r, const CalItem& it, uint8_t itemIndex, int y, 
     const bool selected = hasCheckbox && (selectedIndex == static_cast<int8_t>(itemIndex));
     const int checkSize = titleH;
     const int checkX = W - TITLE_BANNER_TEXT_X - checkSize;
-    // Truncate title short enough to leave room for the checkbox when present.
     const int maxTitleW = hasCheckbox ? (checkX - TITLE_BANNER_TEXT_X - 4) : (W - TITLE_BANNER_TEXT_X * 2);
     char buf[96];
     snprintf(buf, sizeof(buf), "#%02u  %s", number, it.title);
-    const int bannerH = titleH + TITLE_BANNER_PAD * 2;
-    const std::string trunc = r.truncatedText(TITLE_FONT, buf, maxTitleW);
+    const bool needsWrap = hasCheckbox && r.getTextWidth(TITLE_FONT, buf, EpdFontFamily::BOLD) > maxTitleW;
+    const int bannerH = (needsWrap ? titleH * 2 : titleH) + TITLE_BANNER_PAD * 2;
     const int bannerY = y + TEX_GAP;
     r.fillRect(0, bannerY, W, bannerH, true);
-    r.drawText(TITLE_FONT, TITLE_BANNER_TEXT_X, bannerY + TITLE_BANNER_PAD, trunc.c_str(), false, EpdFontFamily::BOLD);
+    if (needsWrap) {
+      const auto lines = r.wrappedText(TITLE_FONT, buf, maxTitleW, 2, EpdFontFamily::BOLD);
+      if (!lines.empty()) {
+        r.drawText(TITLE_FONT, TITLE_BANNER_TEXT_X, bannerY + TITLE_BANNER_PAD, lines[0].c_str(), false,
+                   EpdFontFamily::BOLD);
+      }
+      if (lines.size() > 1) {
+        r.drawText(TITLE_FONT, TITLE_BANNER_TEXT_X, bannerY + TITLE_BANNER_PAD + titleH, lines[1].c_str(), false,
+                   EpdFontFamily::BOLD);
+      }
+    } else {
+      r.drawText(TITLE_FONT, TITLE_BANNER_TEXT_X, bannerY + TITLE_BANNER_PAD, buf, false, EpdFontFamily::BOLD);
+    }
     if (hasCheckbox) {
       const int checkY = bannerY + TITLE_BANNER_PAD;
       if (it.completed) {
         // Completed: white filled square.
         r.fillRect(checkX, checkY, checkSize, checkSize, false);
       } else if (selected) {
-        // Selected (ready to complete): outline + inner filled dot.
+        // Selected (ready to complete): white outline + heavy halftone fill.
         r.drawRect(checkX, checkY, checkSize, checkSize, false);
-        r.fillRect(checkX + 3, checkY + 3, checkSize - 6, checkSize - 6, false);
+        for (int py = checkY + 1; py < checkY + checkSize - 1; py++) {
+          for (int px = checkX + 1; px < checkX + checkSize - 1; px++) {
+            if (((px >> 1) + (py >> 1)) % 2 == 0) r.drawPixel(px, py, false);
+          }
+        }
       } else {
         // Uncompleted, unselected: white outline only.
         r.drawRect(checkX, checkY, checkSize, checkSize, false);
@@ -381,7 +408,7 @@ RemindersRenderer::LayoutResult RemindersRenderer::drawLayout(GfxRenderer& rende
   bool hasCompletable = false;
   while (i < data.count) {
     const CalItem& it = data.items[i];
-    const int bh = blockHeight(it, titleH, subH, detailH, leaveByH);
+    const int bh = blockHeight(renderer, W, i, it, titleH, subH, detailH, leaveByH);
     if (i != startIndex && y + bh > contentBottom) break;
     const bool completable = !it.is_calendar && it.task_id[0] != '\0';
     if (autoSelect && effectiveSelected < 0 && completable) {
