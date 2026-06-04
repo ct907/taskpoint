@@ -5,6 +5,8 @@
 #include <I18n.h>
 #include <Logging.h>
 
+#include <cstring>
+
 #include "RemindersRenderer.h"
 #include "RemindersState.h"
 #include "components/UITheme.h"
@@ -242,6 +244,14 @@ void RemindersActivity::loop() {
       if (syncDone) {
         if (syncResult != GoogleClient::Result::OK) {
           LOG_ERR("RMND", "Task completion failed: %s", GoogleClient::resultName(syncResult));
+        } else if (completeItemIndex < gRemindersData.count) {
+          const uint8_t tail = gRemindersData.count - completeItemIndex - 1;
+          if (tail > 0) {
+            memmove(&gRemindersData.items[completeItemIndex],
+                    &gRemindersData.items[completeItemIndex + 1],
+                    tail * sizeof(CalItem));
+          }
+          gRemindersData.count--;
         }
         state = State::Showing;
         tickRefresh = false;
