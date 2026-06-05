@@ -23,6 +23,7 @@
 #include "StatusBarSettingsActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -51,6 +52,10 @@ void SettingsActivity::rebuildSettingsLists() {
       systemSettings.push_back(setting);
     }
   }
+
+  // Home address is keyboard-editable on device; the SettingsList STRING entry (STR_NONE_OPT) only
+  // handles JSON save/load and does not appear in any category list.
+  displaySettings.push_back(SettingInfo::Action(StrId::STR_REMINDERS_HOME_ADDRESS, SettingAction::EditHomeAddress));
 
   // Append device-only ACTION items
   controlsSettings.insert(controlsSettings.begin(),
@@ -260,6 +265,20 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
         break;
+      case SettingAction::EditHomeAddress:
+        startActivityForResult(
+            std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_REMINDERS_HOME_ADDRESS_HINT),
+                                                   SETTINGS.homeAddress, sizeof(SETTINGS.homeAddress) - 1,
+                                                   InputType::Text),
+            [this](const ActivityResult& result) {
+              if (!result.isCancelled) {
+                const auto& kb = std::get<KeyboardResult>(result.data);
+                snprintf(SETTINGS.homeAddress, sizeof(SETTINGS.homeAddress), "%s", kb.text.c_str());
+                SETTINGS.saveToFile();
+                rebuildSettingsLists();
+              }
+            });
+        break;
       case SettingAction::None:
         // Do nothing
         break;
@@ -368,18 +387,23 @@ void SettingsActivity::render(RenderLock&&) {
           } else {
             valueText = std::to_string(SETTINGS.*(setting.valuePtr));
           }
+        } else if (setting.type == SettingType::ACTION && setting.action == SettingAction::EditHomeAddress) {
+          valueText = SETTINGS.homeAddress;
         }
         return valueText;
       },
       true);
 
   // Draw help text
-  const auto confirmLabel =
-      (selectedSettingIndex == 0)
-          ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
-          : (selectedSettingIndex > 0 && (*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_TIME_TO_SLEEP
-                 ? tr(STR_SELECT)
-                 : tr(STR_TOGGLE));
+  const auto confirmLabel = [&]() -> const char* {
+    if (selectedSettingIndex == 0) return I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount]);
+    if (selectedSettingIndex > 0) {
+      const auto& sel = (*currentSettings)[selectedSettingIndex - 1];
+      if (sel.nameId == StrId::STR_TIME_TO_SLEEP) return tr(STR_SELECT);
+      if (sel.type == SettingType::ACTION) return tr(STR_SELECT);
+    }
+    return tr(STR_TOGGLE);
+  }();
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
