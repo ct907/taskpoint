@@ -253,10 +253,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_CLOCK_SYNCED, &CrossPointSettings::clockHasBeenSynced, "clockHasBeenSynced",
                             StrId::STR_CUSTOMISE_STATUS_BAR),
         // --- Reminders (Taskpoint) ---
-        SettingInfo::Toggle(StrId::STR_REMINDERS_ENABLED, &CrossPointSettings::remindersEnabled, "remindersEnabled",
-                            StrId::STR_CAT_DISPLAY),
-        SettingInfo::Value(StrId::STR_REMINDERS_SYNC_INTERVAL, &CrossPointSettings::remindersSyncIntervalH, {1, 24, 1},
-                           "remindersSyncIntervalH", StrId::STR_CAT_DISPLAY),
+        // Double power-press is gated on sleep screen == REMINDERS (no separate enabled toggle).
         SettingInfo::Toggle(StrId::STR_REMINDERS_TIMEZONE_SYNC, &CrossPointSettings::gcalTimezoneSync,
                             "gcalTimezoneSync", StrId::STR_CAT_DISPLAY),
         // homeAddress is edited on-device via keyboard (EditHomeAddress action in SettingsActivity).

@@ -251,11 +251,6 @@ class CrossPointSettings {
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
 
-  // Reminders (Taskpoint): when enabled, a double power-press launches RemindersActivity
-  // to sync Google Calendar + Tasks. Default off so the double-press is inert otherwise.
-  uint8_t remindersEnabled = 0;
-  // Reserved: hours between background reminder syncs (1..24). Not yet auto-scheduled.
-  uint8_t remindersSyncIntervalH = 1;
   // When enabled, clockUtcOffsetQ is automatically updated from the Google Calendar timezone
   // on each successful sync (reads offset from the first timed event's RFC3339 dateTime).
   uint8_t gcalTimezoneSync = 1;
