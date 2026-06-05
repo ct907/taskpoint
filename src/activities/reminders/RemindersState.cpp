@@ -49,6 +49,7 @@ bool RemindersData::saveToFile() const {
     o["title"] = it.title;
     o["location"] = it.location;
     o["task_id"] = it.task_id;
+    if (it.originOverride[0] != '\0') o["origin"] = it.originOverride;
     o["start"] = static_cast<int64_t>(it.start_epoch);
     o["end"] = static_cast<int64_t>(it.end_epoch);
     o["travel"] = it.travel_secs;
@@ -105,6 +106,7 @@ bool RemindersData::loadFromFile() {
     snprintf(it.title, sizeof(it.title), "%s", o["title"] | "");
     snprintf(it.location, sizeof(it.location), "%s", o["location"] | "");
     snprintf(it.task_id, sizeof(it.task_id), "%s", o["task_id"] | "");
+    snprintf(it.originOverride, sizeof(it.originOverride), "%s", o["origin"] | "");
     it.start_epoch = static_cast<time_t>(o["start"] | 0LL);  // cppcheck-suppress badBitmaskCheck
     it.end_epoch = static_cast<time_t>(o["end"] | 0LL);      // cppcheck-suppress badBitmaskCheck
     it.travel_secs = o["travel"] | 0;                        // cppcheck-suppress badBitmaskCheck

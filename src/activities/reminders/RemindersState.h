@@ -20,6 +20,7 @@ struct CalItem {
   // whole array lives in the single static gRemindersData global, so this adds
   // 64*REMINDERS_MAX_ITEMS = 1 KB of DRAM with no heap growth.
   char task_id[64];
+  char originOverride[32];  // parsed from "start from <addr>" in description; empty = use homeAddress
   uint8_t note_count;
   time_t start_epoch;   // UTC seconds; 0 = no specific time (all-day / undated)
   time_t end_epoch;     // UTC seconds; 0 = unknown
