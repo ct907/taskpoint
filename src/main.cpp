@@ -26,6 +26,7 @@
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "WifiCredentialStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/reminders/RemindersActivity.h"
@@ -421,6 +422,7 @@ void setup() {
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
+  WIFI_STORE.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
@@ -455,17 +457,18 @@ void setup() {
     // Refresh the cached button state a few times — isPressed() needs ~half a second to settle
     // after boot per the HalGPIO contract. Use a millis-based deadline so we always wait the full
     // settle window even if the loop body takes longer than expected on slow boots.
-    // The window is extended slightly when Reminders is enabled to catch the release+re-press of
-    // the second tap.
+    // The window is extended slightly when the Reminders sleep screen is active to catch
+    // the release+re-press of the second tap.
     // verifyPowerButtonWakeup's internal update loop consumes the wasReleased event
     // for the initial press. If the button is already up, the release already happened
     // and only the second press needs to be caught.
-    bool sawPowerRelease = SETTINGS.remindersEnabled && !gpio.isPressed(HalGPIO::BTN_POWER);
-    const unsigned long settleWindow = SETTINGS.remindersEnabled ? 800 : 500;
+    const bool remindersActive = SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::REMINDERS;
+    bool sawPowerRelease = remindersActive && !gpio.isPressed(HalGPIO::BTN_POWER);
+    const unsigned long settleWindow = remindersActive ? 800 : 500;
     const unsigned long settleStart = millis();
     while (millis() - settleStart < settleWindow) {
       gpio.update();
-      if (SETTINGS.remindersEnabled) {
+      if (remindersActive) {
         if (gpio.wasReleased(HalGPIO::BTN_POWER)) {
           sawPowerRelease = true;
         } else if (sawPowerRelease && gpio.wasPressed(HalGPIO::BTN_POWER)) {
@@ -650,7 +653,8 @@ void loop() {
   // activity's onExit() first, freeing reader buffers before the HTTPS sync.
   // Two short power taps within DOUBLE_PRESS_MS; a long hold still sleeps below.
   static unsigned long lastPowerTapMs = 0;  // cppcheck-suppress variableScope
-  if (SETTINGS.remindersEnabled && mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+  if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::REMINDERS &&
+      mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
     constexpr unsigned long DOUBLE_PRESS_MS = 500;
     const unsigned long nowMs = millis();
     if (lastPowerTapMs != 0 && nowMs - lastPowerTapMs <= DOUBLE_PRESS_MS) {

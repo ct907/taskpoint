@@ -29,7 +29,7 @@ constexpr char TOKEN_URL[] = "https://oauth2.googleapis.com/token";
 constexpr char CALENDAR_URL[] =
     "https://www.googleapis.com/calendar/v3/calendars/primary/events"
     "?singleEvents=true&orderBy=startTime&maxResults=25"
-    "&fields=items(summary,location,start,end)";
+    "&fields=items(summary,location,description,start,end)";
 constexpr char TASKS_URL[] =
     "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks"
     "?showCompleted=false&maxResults=25&fields=items(id,title,notes,due,status)";
@@ -302,6 +302,15 @@ int32_t bestRssiInScan(int scanCount, const std::string& ssid) {
 bool connectWifi() {
   if (WiFi.status() == WL_CONNECTED) return true;
 
+  // Wake-from-sleep boots straight into Reminders, which never visits the WiFi
+  // settings screen — the only place that populates WIFI_STORE. After a deep-
+  // sleep wake (a full chip reset) the in-memory list is therefore empty even
+  // though /.crosspoint/wifi.json holds saved networks. Load it from SD before
+  // concluding there's nothing to connect to.
+  if (WIFI_STORE.getCredentials().empty()) {
+    WIFI_STORE.loadFromFile();
+  }
+
   if (WIFI_STORE.getCredentials().empty()) {
     LOG_ERR("GOOG", "No saved WiFi networks to connect to");
     return false;
@@ -309,6 +318,11 @@ bool connectWifi() {
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+  // The radio isn't ready immediately after a deep-sleep wake; the known-good
+  // scan path (WifiSelectionActivity::startWifiScan) settles 100ms before
+  // scanning. Without this the first synchronous scan returns 0 and every saved
+  // network falls into the slow absent[] per-SSID timeout path below.
+  delay(100);
 
   // Scan for what's actually in range, then connect to the strongest *saved*
   // network that's present. This is the key to reliable wake-from-sleep sync:
@@ -317,7 +331,15 @@ bool connectWifi() {
   // saved network sitting right there. An active scan lets us skip absent
   // networks entirely and pick the readily-available one. The scan runs a few
   // seconds; we are on the off-loop sync task so blocking is fine.
-  const int scanCount = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/true);
+  int scanCount = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/true);
+  // An empty/failed first scan right after wake is common; retry a few times
+  // with a short settle, bailing out if a Back press cancelled the sync.
+  for (int attempt = 0; scanCount <= 0 && attempt < 3; attempt++) {
+    if (cancelled()) return false;
+    delay(400);
+    WiFi.scanDelete();
+    scanCount = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/true);
+  }
 
   // Ordered candidate list. First: saved networks seen in the scan, strongest
   // signal first. Then: any saved networks NOT seen (covers hidden SSIDs the
@@ -443,6 +465,7 @@ bool fetchCalendar(const std::string& token, RemindersData& out) {
   JsonObject fi = filter["items"].add<JsonObject>();
   fi["summary"] = true;
   fi["location"] = true;
+  fi["description"] = true;
   fi["start"] = true;
   fi["end"] = true;
 
@@ -460,6 +483,31 @@ bool fetchCalendar(const std::string& token, RemindersData& out) {
     it.is_calendar = true;
     snprintf(it.title, sizeof(it.title), "%s", ev["summary"] | "(no title)");
     copyLocationFirstField(ev["location"] | "", it.location, sizeof(it.location));
+
+    // Scan description for "start from <address>" (case-insensitive) to allow the user
+    // to override the departure origin for this event's travel-time calculation.
+    {
+      static constexpr char kPrefix[] = "start from ";
+      static constexpr size_t kPrefixLen = sizeof(kPrefix) - 1;
+      const char* desc = ev["description"] | "";
+      for (const char* p = desc; *p; p++) {
+        bool match = true;
+        for (size_t k = 0; k < kPrefixLen && match; k++) {
+          char c = p[k];
+          if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+          match = (c == kPrefix[k]);
+        }
+        if (match) {
+          const char* origin = p + kPrefixLen;
+          size_t n = 0;
+          while (origin[n] && origin[n] != '\n' && origin[n] != '\r' && n < sizeof(it.originOverride) - 1) n++;
+          while (n > 0 && origin[n - 1] == ' ') n--;
+          memcpy(it.originOverride, origin, n);
+          it.originOverride[n] = '\0';
+          break;
+        }
+      }
+    }
 
     // An all-day event carries only "date" (no "dateTime"). Track that so the
     // renderer shows "ALL DAY <date>" instead of a countdown to UTC midnight.
@@ -505,24 +553,28 @@ void fetchTravelTimes(RemindersData& out) {
     LOG_DBG("GOOG", "travel times: mapsApiKey not set, skipping");
     return;
   }
-  if (origin.empty()) {
-    LOG_DBG("GOOG", "travel times: homeAddress not set, skipping");
-    return;
-  }
 
   const time_t now = time(nullptr);
 
-  // Indices of items needing a lookup: future, timed, calendar, with a location.
+  // Split qualifying items into two groups:
+  // pending[]         → use homeAddress as origin (batched)
+  // pendingOverride[] → use item.originOverride   (one request each)
   uint8_t pending[REMINDERS_MAX_ITEMS];
-  uint8_t nPending = 0;
+  uint8_t pendingOverride[REMINDERS_MAX_ITEMS];
+  uint8_t nPending = 0, nOverride = 0;
   for (uint8_t i = 0; i < out.count; i++) {
     const CalItem& it = out.items[i];
     const bool qualifies = it.is_calendar && !it.all_day && it.start_epoch > now && it.location[0] != '\0';
     LOG_DBG("GOOG", "item[%u] \"%s\" cal=%d allday=%d future=%d loc=\"%s\" -> %s", i, it.title, it.is_calendar,
             it.all_day, it.start_epoch > now, it.location, qualifies ? "QUEUED" : "skip");
-    if (qualifies) pending[nPending++] = i;
+    if (!qualifies) continue;
+    if (it.originOverride[0] != '\0')
+      pendingOverride[nOverride++] = i;
+    else
+      pending[nPending++] = i;
   }
-  if (nPending == 0) {
+
+  if (nPending == 0 && nOverride == 0) {
     LOG_DBG("GOOG", "travel times: no qualifying items (need future timed calendar event with location)");
     return;
   }
@@ -530,64 +582,105 @@ void fetchTravelTimes(RemindersData& out) {
   char depBuf[16];
   snprintf(depBuf, sizeof(depBuf), "%ld", static_cast<long>(now));
 
-  for (uint8_t base = 0; base < nPending; base += MAPS_MAX_DESTINATIONS) {
-    if (cancelled()) return;
-    const uint8_t chunk = static_cast<uint8_t>(std::min<int>(MAPS_MAX_DESTINATIONS, nPending - base));
-
-    // Destinations joined by '|' (Distance Matrix's multi-destination separator),
-    // then percent-encoded as a single query value.
-    std::string dests;
-    for (uint8_t j = 0; j < chunk; j++) {
-      if (j != 0) dests += "|";
-      dests += out.items[pending[base + j]].location;
-    }
-
-    const std::string url = std::string(DISTANCE_MATRIX_URL) + "&departure_time=" + depBuf +
-                            "&origins=" + urlEncode(origin) + "&destinations=" + urlEncode(dests) +
-                            "&key=" + urlEncode(apiKey);
-
-    std::string resp;
-    int status = 0;
-    // Maps uses the URL key, not a bearer token, so pass an empty bearer.
-    LOG_DBG("GOOG", "distance matrix: querying %u dest(s)", chunk);
-    if (!httpExec(HTTP_METHOD_GET, url, "", "", resp, status) || status != 200) {
-      LOG_ERR("GOOG", "distance matrix HTTP status %d", status);
-      continue;  // best-effort: skip this chunk, keep the rest of the sync
-    }
-
-    // Filter to rows[].elements[].{status,duration,duration_in_traffic}.
-    JsonDocument filter;
+  // Reusable ArduinoJson filter for Distance Matrix responses.
+  JsonDocument filter;
+  {
     JsonObject rowFi = filter["rows"].add<JsonObject>();
     JsonObject elFi = rowFi["elements"].add<JsonObject>();
     elFi["status"] = true;
     elFi["duration"] = true;
     elFi["duration_in_traffic"] = true;
+  }
+
+  // ── Phase 1: batch homeAddress events ────────────────────────────────────
+  if (!origin.empty()) {
+    for (uint8_t base = 0; base < nPending; base += MAPS_MAX_DESTINATIONS) {
+      if (cancelled()) return;
+      const uint8_t chunk = static_cast<uint8_t>(std::min<int>(MAPS_MAX_DESTINATIONS, nPending - base));
+
+      // Destinations joined by '|' (Distance Matrix's multi-destination separator).
+      std::string dests;
+      for (uint8_t j = 0; j < chunk; j++) {
+        if (j != 0) dests += "|";
+        dests += out.items[pending[base + j]].location;
+      }
+
+      const std::string url = std::string(DISTANCE_MATRIX_URL) + "&departure_time=" + depBuf +
+                              "&origins=" + urlEncode(origin) + "&destinations=" + urlEncode(dests) +
+                              "&key=" + urlEncode(apiKey);
+
+      std::string resp;
+      int status = 0;
+      LOG_DBG("GOOG", "distance matrix: querying %u dest(s)", chunk);
+      if (!httpExec(HTTP_METHOD_GET, url, "", "", resp, status) || status != 200) {
+        LOG_ERR("GOOG", "distance matrix HTTP status %d", status);
+        continue;
+      }
+
+      JsonDocument doc;
+      const DeserializationError err = deserializeJson(doc, resp, DeserializationOption::Filter(filter));
+      if (err) {
+        LOG_ERR("GOOG", "distance matrix parse error: %s", err.c_str());
+        continue;
+      }
+
+      uint8_t j = 0;
+      for (JsonObject el : doc["rows"][0]["elements"].as<JsonArray>()) {
+        if (j >= chunk) break;
+        const char* st = el["status"] | "";
+        if (strcmp(st, "OK") == 0) {
+          int32_t secs = el["duration_in_traffic"]["value"] | 0;  // cppcheck-suppress badBitmaskCheck
+          if (secs <= 0) secs = el["duration"]["value"] | 0;      // cppcheck-suppress badBitmaskCheck
+          LOG_DBG("GOOG", "element[%u] OK, travel_secs=%ld", j, static_cast<long>(secs));
+          if (secs > 0) out.items[pending[base + j]].travel_secs = secs;
+        } else {
+          LOG_ERR("GOOG", "element[%u] status=\"%s\" (REQUEST_DENIED=bad key/billing, NOT_FOUND=bad location)", j, st);
+        }
+        j++;
+      }
+    }
+  } else if (nPending > 0) {
+    LOG_DBG("GOOG", "travel times: homeAddress not set, skipping %u default-origin item(s)", nPending);
+  }
+
+  // ── Phase 2: per-event origin overrides ──────────────────────────────────
+  for (uint8_t k = 0; k < nOverride; k++) {
+    if (cancelled()) return;
+    CalItem& it = out.items[pendingOverride[k]];
+    LOG_DBG("GOOG", "distance matrix (override): \"%s\" origin=\"%s\"", it.title, it.originOverride);
+
+    const std::string url = std::string(DISTANCE_MATRIX_URL) + "&departure_time=" + depBuf +
+                            "&origins=" + urlEncode(it.originOverride) + "&destinations=" + urlEncode(it.location) +
+                            "&key=" + urlEncode(apiKey);
+
+    std::string resp;
+    int status = 0;
+    if (!httpExec(HTTP_METHOD_GET, url, "", "", resp, status) || status != 200) {
+      LOG_ERR("GOOG", "distance matrix (override) HTTP status %d", status);
+      continue;
+    }
 
     JsonDocument doc;
     const DeserializationError err = deserializeJson(doc, resp, DeserializationOption::Filter(filter));
     if (err) {
-      LOG_ERR("GOOG", "distance matrix parse error: %s", err.c_str());
+      LOG_ERR("GOOG", "distance matrix (override) parse error: %s", err.c_str());
       continue;
     }
 
-    // Single origin → results live in rows[0].elements, aligned with `dests`.
-    uint8_t j = 0;
-    for (JsonObject el : doc["rows"][0]["elements"].as<JsonArray>()) {
-      if (j >= chunk) break;
-      const char* st = el["status"] | "";
-      if (strcmp(st, "OK") == 0) {
-        // Prefer traffic-aware duration when the key/billing returns it.
-        int32_t secs = el["duration_in_traffic"]["value"] | 0;  // cppcheck-suppress badBitmaskCheck
-        if (secs <= 0) secs = el["duration"]["value"] | 0;      // cppcheck-suppress badBitmaskCheck
-        LOG_DBG("GOOG", "element[%u] OK, travel_secs=%ld", j, static_cast<long>(secs));
-        if (secs > 0) out.items[pending[base + j]].travel_secs = secs;
-      } else {
-        LOG_ERR("GOOG", "element[%u] status=\"%s\" (REQUEST_DENIED=bad key/billing, NOT_FOUND=bad location)", j, st);
-      }
-      j++;
+    // Single origin, single destination → rows[0].elements[0].
+    JsonObject el = doc["rows"][0]["elements"][0];
+    const char* st = el["status"] | "";
+    if (strcmp(st, "OK") == 0) {
+      int32_t secs = el["duration_in_traffic"]["value"] | 0;  // cppcheck-suppress badBitmaskCheck
+      if (secs <= 0) secs = el["duration"]["value"] | 0;      // cppcheck-suppress badBitmaskCheck
+      LOG_DBG("GOOG", "override element OK, travel_secs=%ld", static_cast<long>(secs));
+      if (secs > 0) it.travel_secs = secs;
+    } else {
+      LOG_ERR("GOOG", "override element status=\"%s\"", st);
     }
   }
-  LOG_DBG("GOOG", "travel times: %u destinations queried", nPending);
+
+  LOG_DBG("GOOG", "travel times: %u default, %u override destination(s) queried", nPending, nOverride);
 }
 
 bool fetchTasks(const std::string& token, RemindersData& out) {
@@ -688,7 +781,10 @@ GoogleClient::Result GoogleClient::syncAll(RemindersData& out, const volatile bo
   if (!loadCreds(creds)) return Result::NoCredentials;
 
   if (cancelled()) return Result::Cancelled;
-  if (!connectWifi()) return cancelled() ? Result::Cancelled : Result::WifiFailed;
+  if (!connectWifi()) {
+    if (cancelled()) return Result::Cancelled;
+    return WIFI_STORE.getCredentials().empty() ? Result::NoWifiCreds : Result::WifiFailed;
+  }
 
   syncClock();
 
@@ -759,7 +855,10 @@ GoogleClient::Result GoogleClient::markTaskComplete(uint8_t itemIndex, Reminders
   Creds creds;
   if (!loadCreds(creds)) return Result::NoCredentials;
   if (cancelled()) return Result::Cancelled;
-  if (!connectWifi()) return cancelled() ? Result::Cancelled : Result::WifiFailed;
+  if (!connectWifi()) {
+    if (cancelled()) return Result::Cancelled;
+    return WIFI_STORE.getCredentials().empty() ? Result::NoWifiCreds : Result::WifiFailed;
+  }
 
   auto wifiOff = []() {
     WiFi.disconnect(true);
@@ -794,6 +893,8 @@ const char* GoogleClient::resultName(Result r) {
       return "NoCredentials";
     case Result::WifiFailed:
       return "WifiFailed";
+    case Result::NoWifiCreds:
+      return "NoWifiCreds";
     case Result::ClockUnset:
       return "ClockUnset";
     case Result::AuthFailed:

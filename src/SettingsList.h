@@ -253,16 +253,13 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_CLOCK_SYNCED, &CrossPointSettings::clockHasBeenSynced, "clockHasBeenSynced",
                             StrId::STR_CUSTOMISE_STATUS_BAR),
         // --- Reminders (Taskpoint) ---
-        SettingInfo::Toggle(StrId::STR_REMINDERS_ENABLED, &CrossPointSettings::remindersEnabled, "remindersEnabled",
-                            StrId::STR_CAT_DISPLAY),
-        SettingInfo::Value(StrId::STR_REMINDERS_SYNC_INTERVAL, &CrossPointSettings::remindersSyncIntervalH, {1, 24, 1},
-                           "remindersSyncIntervalH", StrId::STR_CAT_DISPLAY),
+        // Double power-press is gated on sleep screen == REMINDERS (no separate enabled toggle).
         SettingInfo::Toggle(StrId::STR_REMINDERS_TIMEZONE_SYNC, &CrossPointSettings::gcalTimezoneSync,
                             "gcalTimezoneSync", StrId::STR_CAT_DISPLAY),
+        // homeAddress is edited on-device via keyboard (EditHomeAddress action in SettingsActivity).
+        // STR_NONE_OPT hides it from web UI and device category lists; JSON save/load still uses this entry.
         SettingInfo::String(StrId::STR_REMINDERS_HOME_ADDRESS, SETTINGS.homeAddress, sizeof(SETTINGS.homeAddress),
-                            "homeAddress", StrId::STR_CAT_DISPLAY),
-        SettingInfo::String(StrId::STR_REMINDERS_MAPS_API_KEY, SETTINGS.mapsApiKey, sizeof(SETTINGS.mapsApiKey),
-                            "mapsApiKey", StrId::STR_CAT_DISPLAY),
+                            "homeAddress", StrId::STR_NONE_OPT),
     };
     // Only show tilt page turn setting when the QMI8658 IMU is present (X3)
     if (halTiltSensor.isAvailable()) {

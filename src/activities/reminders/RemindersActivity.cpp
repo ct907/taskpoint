@@ -5,6 +5,8 @@
 #include <I18n.h>
 #include <Logging.h>
 
+#include <cstring>
+
 #include "RemindersRenderer.h"
 #include "RemindersState.h"
 #include "components/UITheme.h"
@@ -242,6 +244,14 @@ void RemindersActivity::loop() {
       if (syncDone) {
         if (syncResult != GoogleClient::Result::OK) {
           LOG_ERR("RMND", "Task completion failed: %s", GoogleClient::resultName(syncResult));
+        } else if (completeItemIndex < gRemindersData.count) {
+          const uint8_t tail = gRemindersData.count - completeItemIndex - 1;
+          if (tail > 0) {
+            memmove(&gRemindersData.items[completeItemIndex],
+                    &gRemindersData.items[completeItemIndex + 1],
+                    tail * sizeof(CalItem));
+          }
+          gRemindersData.count--;
         }
         state = State::Showing;
         tickRefresh = false;
@@ -279,7 +289,7 @@ void RemindersActivity::enterStale() {
   staleReached = true;  // stops preventAutoSleep(); main loop will sleep on timeout
   tickRefresh = false;
   gRemindersData.saveToFile();
-  requestUpdate();  // renderFull() draws the stale banner because is_stale is set
+  requestUpdate();  // renderFull() suppresses the live countdown because is_stale is set
 }
 
 void RemindersActivity::render(RenderLock&&) {
@@ -296,10 +306,20 @@ void RemindersActivity::render(RenderLock&&) {
         const bool ok = RemindersRenderer::renderCountdownsOnly(renderer, gRemindersData, pageStart, selectedIndex);
         tickRefresh = false;
         if (!ok) {
-          lastNextIndex = RemindersRenderer::renderFull(renderer, gRemindersData, pageStart, selectedIndex);
+          // A full redraw resolves the default highlight; capture it so Confirm
+          // and Left/Right operate on the auto-selected task.
+          int8_t resolved = selectedIndex;
+          lastNextIndex = RemindersRenderer::renderFull(renderer, gRemindersData, pageStart, selectedIndex,
+                                                        /*autoSelectFirst=*/true, &resolved);
+          selectedIndex = resolved;
         }
       } else {
-        lastNextIndex = RemindersRenderer::renderFull(renderer, gRemindersData, pageStart, selectedIndex);
+        // Auto-highlight the first completable task on the page so a single
+        // Confirm checks it; capture the resolved index for input handling.
+        int8_t resolved = selectedIndex;
+        lastNextIndex = RemindersRenderer::renderFull(renderer, gRemindersData, pageStart, selectedIndex,
+                                                      /*autoSelectFirst=*/true, &resolved);
+        selectedIndex = resolved;
       }
       return;
     }
@@ -314,7 +334,30 @@ void RemindersActivity::render(RenderLock&&) {
       const int midY = renderer.getScreenHeight() / 2;
       renderer.clearScreen();
       renderer.drawCenteredText(UI_12_FONT_ID, midY - 20, tr(STR_REMINDERS_SYNC_FAILED), true, EpdFontFamily::BOLD);
-      renderer.drawCenteredText(UI_10_FONT_ID, midY + 10, tr(STR_REMINDERS_SYNC_FAILED_HINT));
+      // Name the stage that actually failed so a single test run pins the cause
+      // (Cancelled/OK never reach this screen — see loop()).
+      StrId hint;
+      switch (syncResult) {
+        case GoogleClient::Result::NoCredentials:
+          hint = StrId::STR_REMINDERS_FAIL_CREDS;
+          break;
+        case GoogleClient::Result::WifiFailed:
+          hint = StrId::STR_REMINDERS_FAIL_WIFI;
+          break;
+        case GoogleClient::Result::NoWifiCreds:
+          hint = StrId::STR_REMINDERS_FAIL_NOWIFI;
+          break;
+        case GoogleClient::Result::ClockUnset:
+          hint = StrId::STR_REMINDERS_FAIL_CLOCK;
+          break;
+        case GoogleClient::Result::AuthFailed:
+          hint = StrId::STR_REMINDERS_FAIL_AUTH;
+          break;
+        default:
+          hint = StrId::STR_REMINDERS_FAIL_FETCH;
+          break;
+      }
+      renderer.drawCenteredText(UI_10_FONT_ID, midY + 10, I18N.get(hint));
       const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_REMINDERS_RETRY), "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
