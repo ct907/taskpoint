@@ -247,8 +247,7 @@ void RemindersActivity::loop() {
         } else if (completeItemIndex < gRemindersData.count) {
           const uint8_t tail = gRemindersData.count - completeItemIndex - 1;
           if (tail > 0) {
-            memmove(&gRemindersData.items[completeItemIndex],
-                    &gRemindersData.items[completeItemIndex + 1],
+            memmove(&gRemindersData.items[completeItemIndex], &gRemindersData.items[completeItemIndex + 1],
                     tail * sizeof(CalItem));
           }
           gRemindersData.count--;

@@ -270,18 +270,17 @@ void SettingsActivity::toggleCurrentSetting() {
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::EditHomeAddress:
-        startActivityForResult(
-            std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_REMINDERS_HOME_ADDRESS_HINT),
-                                                   SETTINGS.homeAddress, sizeof(SETTINGS.homeAddress) - 1,
-                                                   InputType::Text),
-            [this](const ActivityResult& result) {
-              if (!result.isCancelled) {
-                const auto& kb = std::get<KeyboardResult>(result.data);
-                snprintf(SETTINGS.homeAddress, sizeof(SETTINGS.homeAddress), "%s", kb.text.c_str());
-                SETTINGS.saveToFile();
-                rebuildSettingsLists();
-              }
-            });
+        startActivityForResult(std::make_unique<KeyboardEntryActivity>(
+                                   renderer, mappedInput, tr(STR_REMINDERS_HOME_ADDRESS_HINT), SETTINGS.homeAddress,
+                                   sizeof(SETTINGS.homeAddress) - 1, InputType::Text),
+                               [this](const ActivityResult& result) {
+                                 if (!result.isCancelled) {
+                                   const auto& kb = std::get<KeyboardResult>(result.data);
+                                   snprintf(SETTINGS.homeAddress, sizeof(SETTINGS.homeAddress), "%s", kb.text.c_str());
+                                   SETTINGS.saveToFile();
+                                   rebuildSettingsLists();
+                                 }
+                               });
         break;
       case SettingAction::None:
         // Do nothing
