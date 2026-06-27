@@ -500,7 +500,9 @@ bool fetchCalendar(const std::string& token, RemindersData& out) {
         if (match) {
           const char* origin = p + kPrefixLen;
           size_t n = 0;
-          while (origin[n] && origin[n] != '\n' && origin[n] != '\r' && origin[n] != '<' && n < sizeof(it.originOverride) - 1) n++;
+          while (origin[n] && origin[n] != '\n' && origin[n] != '\r' && origin[n] != '<' &&
+                 n < sizeof(it.originOverride) - 1)
+            n++;
           while (n > 0 && origin[n - 1] == ' ') n--;
           memcpy(it.originOverride, origin, n);
           it.originOverride[n] = '\0';
