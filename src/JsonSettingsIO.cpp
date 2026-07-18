@@ -139,10 +139,6 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
     }
   }
 
-  // Maps API key — removed from SettingsList UI but still read by GoogleClient; persist
-  // so users can configure it by editing settings.json on the SD card directly.
-  if (s.mapsApiKey[0] != '\0') doc["mapsApiKey"] = s.mapsApiKey;
-
   // Front button remap — managed by RemapFrontButtons sub-activity, not in SettingsList.
   doc["frontButtonBack"] = s.frontButtonBack;
   doc["frontButtonConfirm"] = s.frontButtonConfirm;
@@ -233,13 +229,6 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
     s.sleepTimeoutMinutes = CrossPointSettings::sleepTimeoutEnumToMinutes(legacyValue);
     if (needsResave) *needsResave = true;
   }
-  // Maps API key — removed from SettingsList UI but persisted manually (see saveSettings).
-  {
-    const char* mk = doc["mapsApiKey"] | "";
-    strncpy(s.mapsApiKey, mk, sizeof(s.mapsApiKey) - 1);
-    s.mapsApiKey[sizeof(s.mapsApiKey) - 1] = '\0';
-  }
-
   // Front button remap — managed by RemapFrontButtons sub-activity, not in SettingsList.
   using S = CrossPointSettings;
   s.frontButtonBack =
